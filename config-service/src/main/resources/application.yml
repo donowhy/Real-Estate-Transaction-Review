@@ -4,10 +4,10 @@ server:
 spring:
   application:
     name: config-service
-  profiles:
-    active: native
   cloud:
     config:
       server:
-        native:
-          search-locations: classpath:/config-repo
+        git:
+          uri: https://github.com/donowhy/Real-Estate-Transaction-Review.git
+          search-paths: config-service/src/main/resources/config-repo
+          default-label: main
