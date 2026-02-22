@@ -8,6 +8,16 @@ spring:
     config:
       server:
         git:
-          uri: https://github.com/donowhy/Real-Estate-Transaction-Review.git
-          search-paths: config-service/src/main/resources/config-repo
+          uri: https://github.com/donowhy/Real-Estate-Transaction-Review_Config.git
+          username: ${GIT_USERNAME}
+          password: ${GIT_PASSWORD}
+          search-paths: .
           default-label: main
+          force-pull: true
+
+eureka:
+  client:
+    service-url:
+      defaultZone: http://$\{EUREKA_HOST:localhost}:8761/eureka/
+  instance:
+    prefer-ip-address: true

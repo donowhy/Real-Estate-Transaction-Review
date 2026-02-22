@@ -1,0 +1,91 @@
+version: '3.8'
+
+services:
+  discovery-service:
+    build: ./discovery-service
+    ports:
+      - "8761:8761"
+    networks:
+      - msa-network
+    # [해결 1] 헬스체크: 유레카 서버가 완전히 켜져서 웹페이지가 뜰 때까지 검사함
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8761/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  config-service:
+    build: ./config-service
+    ports:
+      - "8888:8888"
+    depends_on:
+      discovery-service:
+        # 유레카가 '건강해질 때까지(service_healthy)' 기다렸다가 켜짐
+        condition: service_healthy
+    environment:
+      - SPRING_PROFILES_ACTIVE=git
+      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=http://discovery-service:8761/eureka/
+      - SPRING_CLOUD_CONFIG_SERVER_GIT_URI=https://github.com/donowhy/Real-Estate-Transaction-Review_Config.git
+      - SPRING_CLOUD_CONFIG_SERVER_GIT_USERNAME=${GIT_USERNAME}
+      - SPRING_CLOUD_CONFIG_SERVER_GIT_PASSWORD=${GIT_TOKEN}
+      - EUREKA_HOST=discovery-service
+      - CONFIG_SERVER_HOST=config-service
+    networks:
+      - msa-network
+    # Config 서버도 설정 파일을 잘 읽어오는지 헬스체크
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8888/user-service/default"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  gateway-service:
+    build: ./gateway-service
+    ports:
+      - "9080:9080"
+    depends_on:
+      config-service:
+        condition: service_healthy
+    environment:
+      - SPRING_CLOUD_CONFIG_URI=http://config-service:8888
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-service:8761/eureka/
+    networks:
+      - msa-network
+    # 만약 헬스체크가 실패하더라도 죽지 않고 계속 재시도하도록 안전장치 추가
+    restart: on-failure
+
+  user-service:
+    build: ./user-service
+    ports:
+      - "9081:9081"
+    depends_on:
+      config-service:
+        condition: service_healthy
+    environment:
+      - SPRING_CLOUD_CONFIG_URI=http://config-service:8888
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-service:8761/eureka/
+      # [해결 2] Git 캐시 무시: 여기서 환경변수로 예쁜 이름을 강제로 주입해 버림!
+      - EUREKA_INSTANCE_INSTANCE_ID=user-service:9081
+    networks:
+      - msa-network
+    restart: on-failure
+
+  review-service:
+    build: ./review-service
+    ports:
+      - "9082:9082"
+    depends_on:
+      config-service:
+        condition: service_healthy
+    environment:
+      - SPRING_CLOUD_CONFIG_URI=http://config-service:8888
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-service:8761/eureka/
+      # [해결 2] Git 캐시 무시: 역슬래시 찌꺼기 완벽 차단!
+      - EUREKA_INSTANCE_INSTANCE_ID=review-service:9082
+    networks:
+      - msa-network
+    restart: on-failure
+
+networks:
+  msa-network:
+    driver: bridge
