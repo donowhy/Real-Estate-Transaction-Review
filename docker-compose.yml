@@ -49,6 +49,7 @@ services:
     environment:
       - SPRING_CLOUD_CONFIG_URI=http://config-service:8888
       - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-service:8761/eureka/
+      - SERVER_PORT=9080
     networks:
       - msa-network
     # 만약 헬스체크가 실패하더라도 죽지 않고 계속 재시도하도록 안전장치 추가
@@ -64,8 +65,8 @@ services:
     environment:
       - SPRING_CLOUD_CONFIG_URI=http://config-service:8888
       - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-service:8761/eureka/
-      # [해결 2] Git 캐시 무시: 여기서 환경변수로 예쁜 이름을 강제로 주입해 버림!
       - EUREKA_INSTANCE_INSTANCE_ID=user-service:9081
+      - SERVER_PORT=9081
     networks:
       - msa-network
     restart: on-failure
@@ -82,6 +83,7 @@ services:
       - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-service:8761/eureka/
       # [해결 2] Git 캐시 무시: 역슬래시 찌꺼기 완벽 차단!
       - EUREKA_INSTANCE_INSTANCE_ID=review-service:9082
+      - SERVER_PORT=9082
     networks:
       - msa-network
     restart: on-failure
