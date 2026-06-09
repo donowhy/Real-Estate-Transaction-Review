@@ -4,5 +4,11 @@ spring:
   cloud:
     config:
       uri: http://${CONFIG_SERVER_HOST:localhost}:8888
+    gateway:
+      routes:
+        - id: order-service
+          uri: ${ORDER_SERVICE_URL:http://localhost:8091}
+          predicates:
+            - Path=/api/v1/orders/**
   profiles:
     active: default
