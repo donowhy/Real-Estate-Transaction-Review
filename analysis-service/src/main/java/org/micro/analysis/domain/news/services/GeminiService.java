@@ -1,12 +1,15 @@
-package org.micro.analysis;
+package org.micro.analysis.domain.news.services;
 
 import lombok.extern.slf4j.Slf4j;
+import org.micro.analysis.domain.news.entity.NewsEvent;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.util.DefaultUriBuilderFactory;
 import jakarta.annotation.PostConstruct;
 import java.time.Duration;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -19,8 +22,13 @@ public class GeminiService {
     @Value("${gemini.api-key:MISSING}")
     private String geminiApiKey;
 
+    @Value("${gemini.model:gemini-2.0-flash}")
+    private String geminiModel;
+
+    @Value("${gemini.url:https://generativelanguage.googleapis.com/v1beta/models/}")
+    private String geminiBaseUrl;
+
     public GeminiService(WebClient.Builder webClientBuilder) {
-        // [핵심] URL 인코딩을 하지 않도록 설정하여 콜론(:) 문제를 해결함
         DefaultUriBuilderFactory factory = new DefaultUriBuilderFactory();
         factory.setEncodingMode(DefaultUriBuilderFactory.EncodingMode.NONE);
         
@@ -93,17 +101,21 @@ public class GeminiService {
 
     private String callGemini(String prompt) {
         String key = getValidKey();
-        // 사용자의 요청에 따라 Gemini 2.0 Flash 모델을 사용합니다.
-        String url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + key;
-        
+
+        // Git Config Server의 설정값을 조합하여 URL 생성
+        String url = String.format("%s%s:generateContent?key=%s",
+                geminiBaseUrl.endsWith("/") ? geminiBaseUrl : geminiBaseUrl + "/",
+                geminiModel,
+                key);
+
         try {
             Map<String, Object> body = Map.of(
-                "contents", List.of(Map.of(
-                    "parts", List.of(Map.of("text", prompt))
-                ))
+                    "contents", List.of(Map.of(
+                            "parts", List.of(Map.of("text", prompt))
+                    ))
             );
 
-            log.info("🤖 Calling Gemini API (Flash 2.0) for Deep Analysis...");
+            log.info("🤖 Calling Gemini API (Model: {}) for Deep Analysis...", geminiModel);
             Map response = webClient.post()
                     .uri(url)
                     .header("Content-Type", "application/json")
@@ -119,7 +131,7 @@ public class GeminiService {
                 Map content = (Map) candidate.get("content");
                 List parts = (List) content.get("parts");
                 String result = (String) ((Map) parts.get(0)).get("text");
-                
+
                 log.info("✨ [GEMINI SUCCESS] Analysis Result:\n{}", result.trim());
                 return result.trim();
             }
