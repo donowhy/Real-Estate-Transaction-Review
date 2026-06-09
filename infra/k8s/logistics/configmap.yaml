@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logistics-config
+  namespace: logistics
+data:
+  KAFKA_BROKER: kafka.logistics.svc.cluster.local:9092
+  REDIS_HOST: redis.logistics.svc.cluster.local
+  JPA_DDL_AUTO: update

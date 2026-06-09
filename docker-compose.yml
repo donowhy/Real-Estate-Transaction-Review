@@ -7,7 +7,6 @@ services:
       - "8761:8761"
     networks:
       - msa-network
-    # [해결 1] 헬스체크: 유레카 서버가 완전히 켜져서 웹페이지가 뜰 때까지 검사함
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8761/"]
       interval: 10s
@@ -20,74 +19,292 @@ services:
       - "8888:8888"
     depends_on:
       discovery-service:
-        # 유레카가 '건강해질 때까지(service_healthy)' 기다렸다가 켜짐
         condition: service_healthy
+    volumes:
+      - ../config/src/main/resources/config-repo:/config-repo
+    env_file: .env # 추가: 설정 서버도 .env 값을 알아야 치환이 가능함
     environment:
-      - SPRING_PROFILES_ACTIVE=git
-      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=http://discovery-service:8761/eureka/
+      - SPRING_PROFILES_ACTIVE=${CONFIG_MODE:-native}
+      - SPRING_CLOUD_CONFIG_SERVER_NATIVE_SEARCH_LOCATIONS=file:/config-repo
       - SPRING_CLOUD_CONFIG_SERVER_GIT_URI=https://github.com/donowhy/Real-Estate-Transaction-Review_Config.git
       - SPRING_CLOUD_CONFIG_SERVER_GIT_USERNAME=${GIT_USERNAME}
       - SPRING_CLOUD_CONFIG_SERVER_GIT_PASSWORD=${GIT_TOKEN}
-      - EUREKA_HOST=discovery-service
-      - CONFIG_SERVER_HOST=config-service
+      - EUREKA_CLIENT_SERVICE_URL_DEFAULTZONE=http://discovery-service:8761/eureka/
     networks:
       - msa-network
-    # Config 서버도 설정 파일을 잘 읽어오는지 헬스체크
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8888/user-service/default"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:8888/analysis-service/default"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  gateway-service:
-    build: ./gateway-service
-    ports:
-      - "9080:9080"
-    depends_on:
-      config-service:
-        condition: service_healthy
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: zookeeper
     environment:
-      - SPRING_CLOUD_CONFIG_URI=http://config-service:8888
-      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-service:8761/eureka/
-      - SERVER_PORT=9080
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
     networks:
       - msa-network
-    # 만약 헬스체크가 실패하더라도 죽지 않고 계속 재시도하도록 안전장치 추가
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    networks:
+      - msa-network
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  crawler-service:
+    build: ../news-crawler-service
+    container_name: crawler-service
+    ports:
+      - "8000:8000"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      - KAFKA_BROKER=kafka:9092
+      - KAFKA_TOPIC=raw-news-topic
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    networks:
+      - msa-network
     restart: on-failure
 
-  user-service:
-    build: ./user-service
-    ports:
-      - "9081:9081"
+  analysis-service:
+    build: ./analysis-service
+    container_name: analysis-service
     depends_on:
+      kafka:
+        condition: service_healthy
       config-service:
         condition: service_healthy
+    env_file: .env
     environment:
+      - KAFKA_BROKER=kafka:9092
       - SPRING_CLOUD_CONFIG_URI=http://config-service:8888
       - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-service:8761/eureka/
-      - EUREKA_INSTANCE_INSTANCE_ID=user-service:9081
-      - SERVER_PORT=9081
+      # 최후의 보루: 설정 서버를 무시하고 환경변수로 직접 박아버림 (우선순위 최고)
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
     networks:
       - msa-network
     restart: on-failure
 
-  review-service:
-    build: ./review-service
+  redis:
+    image: redis:7.0-alpine
+    container_name: redis
     ports:
-      - "9082:9082"
-    depends_on:
-      config-service:
-        condition: service_healthy
-    environment:
-      - SPRING_CLOUD_CONFIG_URI=http://config-service:8888
-      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-service:8761/eureka/
-      # [해결 2] Git 캐시 무시: 역슬래시 찌꺼기 완벽 차단!
-      - EUREKA_INSTANCE_INSTANCE_ID=review-service:9082
-      - SERVER_PORT=9082
+      - "6379:6379"
     networks:
       - msa-network
-    restart: on-failure
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: newsdb
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+    networks:
+      - msa-network
+
+  logistics-postgres:
+    image: postgres:15-alpine
+    container_name: logistics-postgres
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: logistics
+      POSTGRES_PASSWORD: ${LOGISTICS_DB_PASSWORD:-logistics}
+    volumes:
+      - logistics-postgres-data:/var/lib/postgresql/data
+      - ./infra/docker/postgres/init-logistics-databases.sh:/docker-entrypoint-initdb.d/10-logistics-databases.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U logistics -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - msa-network
+
+  order-service:
+    build:
+      context: .
+      dockerfile: infra/docker/logistics.Dockerfile
+      args:
+        SERVICE: order-service
+    environment:
+      SERVER_PORT: 8080
+      DB_URL: jdbc:postgresql://logistics-postgres:5432/orderdb
+      DB_USERNAME: logistics
+      DB_PASSWORD: ${LOGISTICS_DB_PASSWORD:-logistics}
+      KAFKA_BROKER: kafka:9092
+      REDIS_HOST: redis
+    depends_on:
+      logistics-postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    ports:
+      - "8091:8080"
+    networks:
+      - msa-network
+
+  inventory-service:
+    build:
+      context: .
+      dockerfile: infra/docker/logistics.Dockerfile
+      args:
+        SERVICE: inventory-service
+    environment:
+      SERVER_PORT: 8080
+      DB_URL: jdbc:postgresql://logistics-postgres:5432/inventorydb
+      DB_USERNAME: logistics
+      DB_PASSWORD: ${LOGISTICS_DB_PASSWORD:-logistics}
+      KAFKA_BROKER: kafka:9092
+    depends_on:
+      logistics-postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8092:8080"
+    networks:
+      - msa-network
+
+  payment-service:
+    build:
+      context: .
+      dockerfile: infra/docker/logistics.Dockerfile
+      args:
+        SERVICE: payment-service
+    environment:
+      SERVER_PORT: 8080
+      DB_URL: jdbc:postgresql://logistics-postgres:5432/paymentdb
+      DB_USERNAME: logistics
+      DB_PASSWORD: ${LOGISTICS_DB_PASSWORD:-logistics}
+      KAFKA_BROKER: kafka:9092
+    depends_on:
+      logistics-postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8093:8080"
+    networks:
+      - msa-network
+
+  delivery-service:
+    build:
+      context: .
+      dockerfile: infra/docker/logistics.Dockerfile
+      args:
+        SERVICE: delivery-service
+    environment:
+      SERVER_PORT: 8080
+      DB_URL: jdbc:postgresql://logistics-postgres:5432/deliverydb
+      DB_USERNAME: logistics
+      DB_PASSWORD: ${LOGISTICS_DB_PASSWORD:-logistics}
+      KAFKA_BROKER: kafka:9092
+    depends_on:
+      logistics-postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8094:8080"
+    networks:
+      - msa-network
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: infra/docker/logistics.Dockerfile
+      args:
+        SERVICE: notification-service
+    environment:
+      SERVER_PORT: 8080
+      DB_URL: jdbc:postgresql://logistics-postgres:5432/notificationdb
+      DB_USERNAME: logistics
+      DB_PASSWORD: ${LOGISTICS_DB_PASSWORD:-logistics}
+      KAFKA_BROKER: kafka:9092
+    depends_on:
+      logistics-postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8095:8080"
+    networks:
+      - msa-network
+
+  loki:
+    image: grafana/loki:3.5.0
+    command: -config.file=/etc/loki/config.yml
+    volumes:
+      - ./infra/monitoring/loki-config.yml:/etc/loki/config.yml:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+    networks:
+      - msa-network
+
+  alloy:
+    image: grafana/alloy:v1.9.1
+    command: run /etc/alloy/config.alloy
+    volumes:
+      - ./infra/monitoring/alloy-config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - loki
+    networks:
+      - msa-network
+
+  grafana:
+    image: grafana/grafana:12.0.0
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./infra/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - loki
+    networks:
+      - msa-network
 
 networks:
   msa-network:
     driver: bridge
+
+volumes:
+  logistics-postgres-data:
+  loki-data:
+  grafana-data:
